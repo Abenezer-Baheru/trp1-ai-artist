@@ -1,7 +1,6 @@
 """
 Google Veo video provider.
-
-Uses async polling for video generation.
+Updated for 2026 SDK compatibility.
 """
 
 import asyncio
@@ -14,32 +13,13 @@ from ai_content.core.result import GenerationResult
 from ai_content.core.exceptions import (
     ProviderError,
     AuthenticationError,
-    TimeoutError,
 )
 from ai_content.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-
 @ProviderRegistry.register_video("veo")
 class GoogleVeoProvider:
-    """
-    Google Veo 3.1 video provider.
-
-    Features:
-        - Text-to-video generation
-        - Image-to-video (with first frame)
-        - Multiple aspect ratios
-        - Fast generation (~30 seconds typical)
-
-    Example:
-        >>> provider = GoogleVeoProvider()
-        >>> result = await provider.generate(
-        ...     "Dragon soaring over mountains",
-        ...     aspect_ratio="16:9",
-        ... )
-    """
-
     name = "veo"
     supports_image_to_video = True
     max_duration_seconds = 8
@@ -49,20 +29,15 @@ class GoogleVeoProvider:
         self._client = None
 
     def _get_client(self):
-        """Lazy-load the Google GenAI client."""
         if self._client is None:
             try:
                 from google import genai
-
                 api_key = self.settings.api_key
                 if not api_key:
                     raise AuthenticationError("veo")
                 self._client = genai.Client(api_key=api_key)
             except ImportError:
-                raise ProviderError(
-                    "veo",
-                    "google-genai package not installed. Run: pip install google-genai",
-                )
+                raise ProviderError("veo", "google-genai package not installed.")
         return self._client
 
     async def generate(
@@ -76,53 +51,36 @@ class GoogleVeoProvider:
         use_fast_model: bool = False,
         person_generation: str = "allow_adult",
     ) -> GenerationResult:
-        """
-        Generate video using Veo 3.1.
-
-        Args:
-            prompt: Scene description
-            aspect_ratio: "16:9", "9:16", or "1:1"
-            duration_seconds: Currently ignored (model determines)
-            first_frame_url: Optional image URL to animate
-            output_path: Where to save the video
-            use_fast_model: Use faster but lower quality model
-            person_generation: "allow_adult" or "dont_allow"
-        """
         from google.genai import types
 
         client = self._get_client()
 
-        model = (
-            self.settings.video_fast_model
-            if use_fast_model
-            else self.settings.video_model
-        )
+        # FIX: Ensure we use a stable 2026 model ID
+        model = "veo-3.1-generate-001" 
 
         logger.info(f"🎬 Veo: Generating video ({aspect_ratio})")
-        logger.debug(f"   Prompt: {prompt[:50]}...")
-        logger.debug(f"   Model: {model}")
 
         try:
-            # Build config
-            config = types.GenerateVideoConfig(
+            # FIX: Updated to GenerateVideosConfig (plural) for 2026 SDK
+            config = types.GenerateVideosConfig(
                 aspect_ratio=aspect_ratio,
                 person_generation=person_generation,
             )
 
             # Generate
             if first_frame_url:
-                # Image-to-video
                 image_data = await self._fetch_image(first_frame_url)
                 image = types.Image(image_bytes=image_data)
-                operation = await client.aio.models.generate_video(
+                # FIX: Updated to generate_videos (plural)
+                operation = await client.aio.models.generate_videos(
                     model=model,
                     prompt=prompt,
                     image=image,
                     config=config,
                 )
             else:
-                # Text-to-video
-                operation = await client.aio.models.generate_video(
+                # FIX: Updated to generate_videos (plural)
+                operation = await client.aio.models.generate_videos(
                     model=model,
                     prompt=prompt,
                     config=config,
@@ -131,15 +89,12 @@ class GoogleVeoProvider:
             # Poll until complete
             logger.info("   Waiting for generation...")
             while not operation.done:
-                await asyncio.sleep(5)
-                operation = await client.aio.operations.get(operation)
+                await asyncio.sleep(10) # Increased sleep to be kind to the API
+                operation = await client.aio.operations.get(operation.name)
 
             if not operation.response or not operation.response.generated_videos:
                 return GenerationResult(
-                    success=False,
-                    provider=self.name,
-                    content_type="video",
-                    error="No video generated",
+                    success=False, provider=self.name, content_type="video", error="No video generated"
                 )
 
             # Get video data
@@ -175,16 +130,11 @@ class GoogleVeoProvider:
         except Exception as e:
             logger.error(f"Veo generation failed: {e}")
             return GenerationResult(
-                success=False,
-                provider=self.name,
-                content_type="video",
-                error=str(e),
+                success=False, provider=self.name, content_type="video", error=str(e)
             )
 
     async def _fetch_image(self, url: str) -> bytes:
-        """Fetch image data from URL."""
         import httpx
-
         async with httpx.AsyncClient() as client:
             response = await client.get(url)
             response.raise_for_status()
